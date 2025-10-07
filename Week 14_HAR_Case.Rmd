@@ -1,9 +1,6 @@
 ---
 title: "Week 14 : Human Activity Recognition Case"
-author:
-  - Rutvi Gosai
-  - Shashank Gupta
-  - Vedija Jagtap
+author: Vedija Jagtap
 date: "`r Sys.Date()`"
 output:
   pdf_document:
