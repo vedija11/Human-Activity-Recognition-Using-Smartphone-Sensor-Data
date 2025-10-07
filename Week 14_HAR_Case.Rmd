@@ -1,0 +1,452 @@
+---
+title: "Week 14 : Human Activity Recognition Case"
+author:
+  - Rutvi Gosai
+  - Shashank Gupta
+  - Vedija Jagtap
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Introduction
+
+The objective of this project is to classify human activities using time-series sensor data collected from smartphone accelerometers and gyroscopes. The dataset contains over 500 predictor variables describing various movement patterns across six activity labels: LAYING, SITTING, STANDING, WALKING, WALKING_UPSTAIRS, and WALKING_DOWNSTAIRS. Given the high dimensionality of the feature space, the primary aim is to extract meaningful patterns using dimensionality reduction techniques and evaluate the performance of multiple classification algorithms. The end goal is to identify the best-performing model that can accurately predict human activities from wearable device data.
+
+```{r}
+# Load required libraries
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(caret)
+library(DataExplorer)
+library(ggcorrplot)
+library(factoextra)
+library(randomForest)
+library(xgboost)
+
+# Load dataset
+data <- read.csv("HumanActivityRecognition.csv")
+
+# Inspect structure and basic summary
+str(data)
+summary(data)
+
+```
+
+```{r}
+# Remove unnecessary index column
+data <- data[ , -1]
+
+# Convert Activity to a factor
+data$Activity <- as.factor(data$Activity)
+
+# Check for missing values
+sum(is.na(data)) 
+
+```
+
+```{r}
+ggplot(data, aes(x = Activity, fill = Activity)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(title = "Distribution of Activity Classes", x = "Activity", y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+#Key Insights:
+
+- The dataset contains multiple human activity classes such as WALKING, SITTING, LAYING, STANDING, WALKING_DOWNSTAIRS, and WALKING_UPSTAIRS.
+
+- LAYING has the highest frequency, followed by STANDING, indicating these activities are more represented.
+
+- WALKING_DOWNSTAIRS has the lowest count, suggesting potential class imbalance.
+
+- This imbalance may lead to biased model performance, where the classifier performs better on more common classes and worse on underrepresented ones.
+
+- Addressing class imbalance may be necessary during model building using resampling or class weights.
+
+```{r}
+# Select meaningful features
+features_to_plot <- c("X1.tBodyAcc.mean...X", 
+                      "X2.tBodyAcc.mean...Y", 
+                      "X4.tBodyAcc.std...X")
+
+# Convert to long format for ggplot
+
+data_long <- data %>%
+  select(all_of(features_to_plot), Activity) %>%
+  pivot_longer(cols = -Activity, names_to = "Feature", values_to = "Value")
+
+# Plot distribution of selected features by Activity
+
+ggplot(data_long, aes(x = Activity, y = Value, fill = Activity)) +
+  geom_boxplot() +
+  facet_wrap(~ Feature, scales = "free") +
+  theme_minimal() +
+  labs(title = "Distribution of Selected Features by Activity", y = "Sensor Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+#Key Insights from Boxplot Analysis
+
+Feature X1.tBodyAcc.mean...X (Mean Acceleration in X-Axis):
+
+- WALKING_DOWNSTAIRS shows the widest box, indicating high variability.
+
+- WALKING and WALKING_UPSTAIRS also show moderate variation.
+
+- SITTING, STANDING, and LAYING display narrow, flat boxes, suggesting low or no movement.
+
+- Conclusion: This feature helps distinguish dynamic vs. static activities.
+
+Feature X2.tBodyAcc.mean...Y (Mean Acceleration in Y-Axis):
+
+- Mostly flat boxes across activities.
+
+- Slight variation seen only for WALKING_UPSTAIRS.
+
+- Conclusion: Limited discriminative power overall, but may help detect upward stair movement.
+
+Feature X4.tBodyAcc.std...X (Standard Deviation in X-Axis):
+
+- WALKING_DOWNSTAIRS has the tallest and most spread out box, indicating rapid variability.
+
+- WALKING and WALKING_UPSTAIRS show moderate variance.
+
+- Static activities show minimal variance.
+
+- Conclusion: Excellent feature for capturing motion intensity.
+
+
+
+```{r}
+
+# Select first 10 numeric features for demonstration (you can expand later)
+subset_data <- data[, 1:10]
+
+# Compute correlation matrix
+cor_matrix <- cor(subset_data)
+
+# Plot correlation heatmap
+ggcorrplot(cor_matrix, lab = TRUE, type = "lower", title = "Correlation Matrix of Selected Features")
+
+```
+
+#Key Insights
+
+High Positive Correlation Among Similar Features:
+
+- The features representing the standard deviation along X, Y, and Z axes — X4.tBodyAcc.std...X, X5.tBodyAcc.std...Y, X6.tBodyAcc.std...Z — are strongly correlated (above 0.86).
+
+- Similarly, the median absolute deviation (MAD) features — X7, X8, X9 — also show strong mutual correlation (above 0.85).
+
+- This implies redundancy, as these features capture very similar movement characteristics across different axes.
+
+Redundancy Between STD and MAD Groups:
+
+- There is strong correlation (around 0.90–0.91) between corresponding std and mad features on the same axis (e.g., X4.std.X and X7.mad.X), suggesting they provide overlapping information.
+
+- For modeling purposes, we could consider dropping one set to reduce dimensionality without significant information loss.
+
+Low Correlation with Mean Features:
+
+- The mean features (X1, X2, X3) show very low correlation with most other variables, indicating they may offer independent signals useful for classification.
+
+Conclusion: The dataset has highly correlated predictors, especially among features measuring similar motion statistics. Dimensionality reduction is essential to remove redundancy and reduce computational cost before applying machine learning models.
+
+```{r}
+
+# Step 1: Remove 'Activity' column for PCA (store it separately)
+activity_labels <- data$Activity
+numeric_data <- data[ , !names(data) %in% c("Activity")]
+
+# Step 2: Scale the numeric features
+scaled_data <- scale(numeric_data)
+
+# Step 3: Run PCA
+pca_result <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
+
+# Step 4: Scree plot to visualize variance explained
+fviz_eig(pca_result, 
+         addlabels = TRUE, 
+         ylim = c(0, 50), 
+         main = "Scree Plot: Variance Explained by Principal Components")
+```
+#Key Insights:
+
+- PC1 is dominant: The first principal component (PC1) explains 50.7% of the total variance, indicating that a large portion of the data structure is captured along this dimension.
+
+- Steep drop after PC1: There's a sharp decline from PC1 to PC2, where PC2 explains only 6.2% of the variance. This "elbow" suggests diminishing returns after the first few PCs.
+
+- Cumulative variance: The first 5 PCs together explain ~63.9% of the variance, making them strong candidates for dimensionality reduction.
+
+- Long tail of low-variance PCs: From PC6 onward, each contributes less than 2% variance, and thus adds minimal unique information.
+
+```{r}
+
+# Remove Activity column for PCA
+features <- data %>% select(-Activity)
+
+# Apply PCA with scaling
+pca_result <- prcomp(features, center = TRUE, scale. = TRUE)
+
+# Create a data frame with first two PCs and Activity
+pca_df <- data.frame(PC1 = pca_result$x[,1],
+                     PC2 = pca_result$x[,2],
+                     Activity = data$Activity)
+
+# Plot PCA scatter by Activity
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Activity)) +
+  geom_point(alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "PCA: First Two Principal Components Colored by Activity",
+       x = "Principal Component 1",
+       y = "Principal Component 2")
+```
+#Key Insights: 
+
+Visible Clusters for some Activities:
+
+- Certain activities such as laying an walking_downstairs form relatively distinct clusters.
+
+- This suggests these activities have unique sensor signal patterns that PCA is able to capture effectively. 
+
+Overlap Between some Activities:
+
+- Activities like sitting and standing overlap considerably. 
+
+- This implies that their sensor signals are similar in structure, at least when reduced to two dimensions, and may be harder to classify without more components or features. 
+
+Walking Activities spread out more:
+
+- Walking, Walking_Upstairs, and Walking_Downstairs show more spread, indicating greater variability in sensor signals for dynamic movements. 
+
+- They tend to cover a broader region in PCA space, which aligns with higher physical movement and varied sensor patterns,
+
+Principal Component 1(PC1) seems to capture a significant part of the variance:
+
+- Points span widely along the PC1 axis, indicating that it captures a major pattern or trend in the dataset. 
+
+- Activities that differ strongly in physical posture(e.g.Laying vs Walking ) tend to seperate along this axis. 
+
+```{r}
+# Keep top 10 principal components
+pca_data <- data.frame(pca_result$x[, 1:10])
+pca_data$Activity <- data$Activity
+
+# View structure
+str(pca_data)
+```
+
+```{r}
+set.seed(123)  # For reproducibility
+trainIndex <- createDataPartition(pca_data$Activity, p = 0.7, list = FALSE)
+train_data <- pca_data[trainIndex, ]
+test_data <- pca_data[-trainIndex, ]
+```
+
+KNN Model
+```{r}
+# Train kNN
+set.seed(123)
+knn_model <- train(Activity ~ ., data = train_data,
+                   method = "knn",
+                   trControl = trainControl(method = "cv", number = 5),
+                   tuneLength = 5)
+
+# Print results
+print(knn_model)
+```
+
+#Model Performance:
+
+- Accuracy ranged from 69.0% to 69.7% across tested k values (5 to 13).
+
+- The optimal k value selected was 9, yielding the highest accuracy of 69.7%.
+
+- Kappa statistic at k = 9 was 0.635, indicating a moderate level of agreement between predictions and actual activity classes.
+
+#Interpretation:
+
+- The model shows decent overall performance, especially considering reduced dimensionality.
+
+- Some class confusion is expected due to overlapping activities like sitting and standing.
+
+- kNN may perform better with fine-tuned preprocessing or more components, but is limited in capturing complex patterns compared to advanced models.
+
+#Conclusion:
+
+- This provides a solid baseline classification model.
+
+- Further improvement is anticipated using ensemble methods like Random Forest or boosting algorithms like XGBoost.
+
+Random Forest
+```{r}
+
+set.seed(123)
+
+rf_model <- train(
+  Activity ~ ., 
+  data = pca_data,
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 5
+)
+
+print(rf_model)
+```
+
+#Model Performance:
+
+- Accuracy ranged from 70.1% to 71.0% across different mtry values (number of variables randomly sampled at each split).
+
+- Best performance was observed at mtry = 4:
+
+- Accuracy: 71.0%
+
+- Kappa: 0.651 (slightly better than kNN's 0.635)
+
+#Interpretation:
+
+- Random Forest outperformed kNN in both accuracy and agreement (Kappa).
+
+- Stronger modeling of non-linear relationships and interaction effects likely improved classification.
+
+- The difference is modest, but indicates Random Forest is more robust to noise and less sensitive to class overlap.
+
+#Conclusion:
+
+- Random Forest is currently the best performing model.
+
+- Shows good generalization with PCA features, suggesting dimensionality reduction preserved important variance.
+
+SVM Model
+```{r}
+# Load required package
+library(e1071)
+
+# Set up training control
+ctrl <- trainControl(method = "cv", number = 5)
+
+# Train SVM with radial kernel
+svm_model <- train(Activity ~ ., data = train_data,
+                   method = "svmRadial",
+                   trControl = ctrl,
+                   tuneLength = 5)
+
+# View results
+print(svm_model)
+
+```
+#Hyperparameter Tuning:
+
+- The model was tuned over several values of C (regularization parameter), while sigma (RBF kernel width) was fixed at 0.1038231.
+
+- The best performance was achieved with C = 4.
+
+#Performance Metrics:
+
+- Highest Accuracy: 70.3% (C = 4)
+
+- Kappa Statistic: 0.642 — indicating moderate agreement between predicted and actual labels.
+
+#Conclusion:
+
+- The SVM model showed competitive performance and slightly outperformed the kNN model.
+
+- However, it still lags slightly behind the Random Forest model, which achieved the best accuracy (~71%).
+
+XGBoost Model
+```{r}
+
+# 1. Save activity label levels
+activity_levels <- levels(data$Activity)
+
+# 2. Map Activity to numeric labels (0 to 5)
+train_data_xgb <- train_data
+test_data_xgb <- test_data
+
+train_data_xgb$Activity <- as.numeric(factor(train_data_xgb$Activity, levels = activity_levels)) - 1
+test_data_xgb$Activity <- as.numeric(factor(test_data_xgb$Activity, levels = activity_levels)) - 1
+
+# 3. Create DMatrix
+dtrain <- xgb.DMatrix(data = as.matrix(train_data_xgb[, -ncol(train_data_xgb)]), label = train_data_xgb$Activity)
+dtest <- xgb.DMatrix(data = as.matrix(test_data_xgb[, -ncol(test_data_xgb)]), label = test_data_xgb$Activity)
+
+# 4. Train XGBoost
+xgb_model <- xgboost(data = dtrain,
+                     max.depth = 6,
+                     eta = 0.3,
+                     nrounds = 100,
+                     objective = "multi:softmax",
+                     num_class = 6,
+                     eval_metric = "merror",
+                     verbose = 0)
+
+# 5. Predict
+xgb_preds <- predict(xgb_model, dtest)
+
+# 6. Convert numeric predictions back to factor
+xgb_preds_factor <- factor(xgb_preds, levels = 0:5, labels = activity_levels)
+actual_factor <- factor(test_data_xgb$Activity, levels = 0:5, labels = activity_levels)
+
+# 7. Confusion matrix
+confusionMatrix(xgb_preds_factor, actual_factor)
+
+```
+# Model Performance
+- Overall Accuracy: The model achieved 68.9% accuracy, which is competitive with other models in the study.
+
+- Kappa Score: With a Kappa of 0.6258, the XGBoost model shows substantial agreement between predicted and actual classes beyond random chance.
+
+#Class-wise Performance:
+
+- Best performance was observed for LAYING (Sensitivity: 75.5%) and WALKING (Sensitivity: 73.4%), indicating strong classification for these distinct postures and movements.
+
+- SITTING and STANDING classes showed more confusion, with overlapping features leading to lower precision (both ~55–58%) and sensitivity (~55–68%).
+
+- WALKING_DOWNSTAIRS and WALKING_UPSTAIRS were reasonably detected with balanced accuracies above 82% and 83%, respectively.
+
+- Balanced Accuracy across all classes remained between 73% and 85%, showing consistent model generalization across activities.
+
+- Error Patterns: Misclassifications were common between adjacent postures (e.g., SITTING vs. STANDING), which is expected due to sensor signal similarity.
+
+```{r}
+# Create a comparison data frame
+model_results <- data.frame(
+  Model = c("kNN", "Random Forest", "SVM", "XGBoost"),
+  Accuracy = c(0.6969, 0.7104, 0.7034, 0.6892),
+  Kappa = c(0.6349, 0.6512, 0.6424, 0.6258)
+)
+
+print(model_results)
+```
+
+```{r}
+
+ggplot(model_results, aes(x = Model, y = Accuracy, fill = Model)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5, size = 4) +
+  theme_minimal() +
+  labs(title = "Model Accuracy Comparison", y = "Accuracy", x = "Model") +
+  theme(legend.position = "none")
+```
+
+# Conclusion 
+
+Four classification models were trained and evaluated after reducing dimensionality using PCA, retaining the top 10 principal components. The models included k-Nearest Neighbors (kNN), Random Forest, Support Vector Machines (SVM), and XGBoost. Each model was assessed using accuracy and Kappa statistics through 5-fold cross-validation.
+
+Among these, Random Forest achieved the best performance, with an accuracy of 71.04% and a Kappa score of 0.6512. SVM followed closely with slightly lower accuracy and agreement scores, while kNN and XGBoost showed comparatively lower performance. These results indicate that Random Forest not only classified the activities with the highest overall precision but also maintained consistent class-wise agreement, making it the most reliable model for this task.
+
+In conclusion, Random Forest was selected as the final model for its strong predictive power, balanced performance across both dynamic and static activities, and its robustness in handling the complex structure of the PCA-reduced feature space.
